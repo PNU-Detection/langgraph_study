@@ -75,3 +75,22 @@ for desc, resource_type, triggered_metrics, raw_metrics in cases:
     print(f"  anomaly_type   : {result['anomaly_type']}")
     print(f"  reasoning      : {result['classification_reasoning']}")
     print(f"  interim_action : {result['interim_action_taken']}")
+
+from dotenv import load_dotenv
+load_dotenv()
+
+print("\n[ EC2 cpu+network 동시 이상 → LLM 판단 ]")
+state = make_state(
+    resource_type="EC2",
+    triggered_metrics=["cpu_utilization", "network_in"],
+    raw_metrics={
+        "cpu_utilization": [10.0]*28 + [10.0, 92.0],   # 마지막에 급등
+        "network_in":      [1000.0]*28 + [1000.0, 98000.0],
+        "network_out":     [500.0]*30,
+        "cost":            [0.01]*30,
+    }
+)
+result = classification_node(state)
+print(f"  anomaly_type   : {result['anomaly_type']}")
+print(f"  reasoning      : {result['classification_reasoning']}")
+print(f"  interim_action : {result['interim_action_taken']}")

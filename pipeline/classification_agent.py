@@ -38,12 +38,17 @@ prompt = ChatPromptTemplate.from_template("""
 - cost_inefficiency: 낭비형. 좀비 리소스, 오버프로비저닝. 긴급도 낮음.
 - cost_spike: 급증형. 트래픽 폭증, Lambda 호출 폭증. 긴급도 높음.
 - risk_security: 위험형. EDoS, DDoS, 비정상 접근. 매우 민감.
+
+## 판단 우선순위
+- risk_security는 비정상 접근, 알 수 없는 IP, EDoS 등 명확한 보안 근거가 있을 때만 사용
+- 보안 근거 없이 cpu + network 동시 급증만으로는 반드시 cost_spike로 분류
+- 애매한 경우 cost_spike > cost_inefficiency 순으로 보수적으로 판단
  
 ## 응답 형식 (JSON만, 다른 텍스트 금지)
 {{
   "anomaly_type": "cost_inefficiency" | "cost_spike" | "risk_security",
   "reasoning": "판단 근거를 2문장 이내로",
-  "interim_action": "즉시 취할 임시조치 (없으면 null)"
+  "interim_action": "즉시 취할 임시조치를 10단어 이내로 (없으면 null)"
 }}
 """)
  
