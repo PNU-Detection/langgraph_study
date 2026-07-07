@@ -336,7 +336,8 @@ def qa_node_force_fail(state: PipelineState) -> PipelineState:
 
 
 def qa_node_force_pass(state: PipelineState) -> PipelineState:
-    """테스트용: 항상 통과하는 QA 노드."""
+    """테스트용: 항상 통과하는 QA 노드.
+      (테스트에서 다른 노드를 점검하기 위해, LLM 노드의 결과를 일시적으로 모두 무시하고 넘어감)"""
     sla_result: SlaCheckResult = {
         "cpu_ok": True,
         "cost_ok": True,
