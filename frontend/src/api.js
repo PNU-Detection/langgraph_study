@@ -144,6 +144,10 @@ export const api = {
       resource_type: entry.resource_type,
       reason: entry.reason,
       expires_at: entry.expires_at,
+      category: entry.category,
+      effective_from: entry.effective_from,
+      daily_start_hour: entry.daily_start_hour,
+      daily_end_hour: entry.daily_end_hour,
     })});
     return { ...data, id: data.entry_id, pattern: data.resource_id };
   },
