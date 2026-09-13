@@ -33,6 +33,7 @@ from schema.state import PipelineState, SlaCheckResult
 from pipeline.action_agent import rollback_action
 from pipeline.orchestrator import assemble_resource
 from pipeline.rule_engine import get_rule_engine
+from pipeline.inbound_handlers import remove_waf_rate_based_rule
 from utils.slack_notifier import send_slack_alert
 
 logger = logging.getLogger(__name__)
@@ -54,13 +55,23 @@ def _update_llm_log_with_qa_result(state: PipelineState) -> None:
     LLM 판단 로그에 QA 결과를 추가.
     trace_id로 해당 로그 엔트리를 찾아 qa_result 필드를 업데이트.
 
-    LLM 판단이 아닌 경우(matched_rule_id가 있는 경우)는 스킵.
+    Decision 단계가 LLM 판단이 아닌 경우는 스킵.
+
+    ⚠️ 2026-09-12 버그 수정: 원래 이 조건이 state["matched_rule_id"]를 봤는데, 그건
+    Decision이 아니라 Classification 단계가 채우는 필드다(schema/state.py 참고 -
+    classification_agent.py의 CLF-xxx 규칙 매칭 결과). Classification은 거의 항상
+    규칙에 매칭되므로, Decision이 실제로 LLM을 썼어도 이 조건 때문에 매번 "LLM
+    판단 아님"으로 오판해 로깅을 건너뛰었다 - 그 결과 llm_decision_log.jsonl의
+    모든 LLM 판단 항목이 qa_result=null로 남아 decision_pseudocode_promoter.py가
+    검증된 패턴을 하나도 못 찾는 상태였다. Decision이 LLM을 썼는지는
+    decision_agent.py가 LLM 경로에서만 채우는 state["decision_pseudo_code"]로
+    판단해야 정확하다.
     """
     trace_id = state.get("trace_id")
-    matched_rule_id = state.get("matched_rule_id")
+    decision_used_llm = bool(state.get("decision_pseudo_code"))
 
-    # LLM 판단이 아니면 (Rule Book으로 분류됨) 로깅 스킵
-    if not trace_id or matched_rule_id is not None:
+    # Decision이 LLM 판단이 아니면(Rule Book으로 결정됨) 로깅 스킵
+    if not trace_id or not decision_used_llm:
         return
 
     qa_result = {
@@ -499,6 +510,42 @@ def _call_llm_qa(state: PipelineState) -> tuple[SlaCheckResult, bool, str]:
     )
 
 
+def _release_waf_rate_limit_if_resolved(state: PipelineState) -> None:
+    """AutoScaling EDoS 대응으로 WAF Rate-based Rule을 걸었던 경우, QA가 트래픽
+    정상화를 확인했으면(qa_passed=True) 그 규칙을 자동으로 해제한다.
+
+    inbound_handlers.py의 remove_waf_rate_based_rule()은 이미 구현·테스트돼 있었지만
+    지금까지 파이프라인 어디서도 호출되지 않아 한 번도 실제로 해제된 적이 없었다
+    (2026-09-11 발견, 팀원 B 구현 + 여기서 연동). 이게 없으면 공격이 끝난 뒤에도
+    Rate-based Rule이 계속 남아 정상 트래픽까지 제한하게 된다."""
+    if state.get("resource_type") != "AutoScaling":
+        return
+    if state.get("action_executed") != "ScaleDown":
+        return
+
+    waf_result = (state.get("action_result") or {}).get("waf_result")
+    if not waf_result or waf_result.get("status") != "success":
+        return  # WAF가 애초에 안 걸렸으면(ALB 미연결 등) 해제할 것도 없음
+
+    log_entries = state.get("log_entries", [])
+    try:
+        release_result = remove_waf_rate_based_rule(
+            rule_name=waf_result["rule_name"],
+            web_acl_name=waf_result["web_acl_name"],
+            web_acl_id=waf_result["web_acl_id"],
+            dry_run=False,
+        )
+        log_entries.append(
+            f"[QA] 트래픽 정상화 확인 -> WAF Rate-based Rule 자동 해제 "
+            f"(status={release_result.get('status')})"
+        )
+        logger.info("[QA] WAF Rule 자동 해제: %s", release_result.get("status"))
+    except Exception as exc:
+        log_entries.append(f"[QA] WAF Rule 자동 해제 시도 실패: {exc}")
+        logger.warning("[QA] WAF Rule 자동 해제 실패: %s", exc)
+    state["log_entries"] = log_entries
+
+
 def _trigger_rollback(state: PipelineState, qa_reasoning: str) -> str:
     """
     QA 실패 확정 시 pre_action_snapshot으로 즉시 롤백을 실행한다.
@@ -670,6 +717,10 @@ def qa_node(state: PipelineState) -> PipelineState:
                 f"사유: {reasoning}\n"
                 f"더 이상 자동 재시도하지 않습니다 — 관리자 확인이 필요합니다."
             )
+    else:
+        # 검증 통과: 문제가 해소됐으니, EDoS 대응으로 걸어둔 WAF Rate-based Rule이
+        # 있었다면 여기서 자동 해제한다 (안 그러면 정상 트래픽까지 계속 제한됨).
+        _release_waf_rate_limit_if_resolved(state)
 
     # 로그 엔트리 추가
     log_entries.append(f"[QA] {reasoning}")
